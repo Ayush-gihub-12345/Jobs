@@ -10,7 +10,7 @@
     {
       "binding": "DB",
       "database_name": "jobs-db",
-      "database_id": "placeholder-set-after-create",
+      "database_id": "cbf81990-d5e9-472a-b37b-51cf998e6a4c",
       "migrations_dir": "migrations"
     }
   ],
