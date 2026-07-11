@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jobs-platform",
+  "main": "worker/index.ts",
+  "compatibility_date": "2025-06-01",
+  "assets": {
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "jobs-db",
+      "database_id": "placeholder-set-after-create",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": {
+    // Refresh all job sources hourly
+    "crons": ["0 * * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}
