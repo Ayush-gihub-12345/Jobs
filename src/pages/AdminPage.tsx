@@ -46,6 +46,18 @@ export default function AdminPage() {
   return <Dashboard onLogout={() => { api.admin.logout(); setAuthed(false); }} />;
 }
 
+function parseManualJobs(text: string): { title: string; url: string; location?: string }[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [title, location, url] = line.split("|").map((p) => p.trim());
+      return { title, location: location || undefined, url };
+    })
+    .filter((j) => j.title && j.url);
+}
+
 function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [sources, setSources] = useState<Source[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -54,6 +66,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [busyIds, setBusyIds] = useState<Set<number>>(new Set());
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [manualCompany, setManualCompany] = useState("");
+  const [manualText, setManualText] = useState("");
+  const [importing, setImporting] = useState(false);
 
   const load = async () => {
     const [s, st] = await Promise.all([api.admin.sources(), api.admin.stats()]);
@@ -86,6 +101,24 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     catch (err: any) { setNotice({ kind: "error", text: err.message }); }
     finally {
       setBusyIds((s) => { const n = new Set(s); n.delete(id); return n; });
+    }
+  };
+
+  const manualJobs = parseManualJobs(manualText);
+  const importManual = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setImporting(true);
+    setNotice(null);
+    try {
+      const res = await api.admin.importManual(manualCompany.trim(), manualJobs);
+      setNotice({ kind: "ok", text: `Imported ${res.count} job(s) for ${res.source.company}.` });
+      setManualCompany("");
+      setManualText("");
+      await load();
+    } catch (err: any) {
+      setNotice({ kind: "error", text: err.message });
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -127,6 +160,29 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       </div>
 
       <div className="admin-section">
+        <h2>Bulk-import company jobs</h2>
+        <div className="help-box" style={{ marginTop: 0, marginBottom: 14 }}>
+          For companies without a public ATS feed — e.g. jobs listed on their LinkedIn page.
+          LinkedIn blocks automated scraping, so paste each listing by hand: one job per line,
+          formatted <code>Title | Location | Apply URL</code> (location optional). Re-import the
+          same company name any time to replace its listings with an updated paste.
+        </div>
+        <form onSubmit={importManual}>
+          <input className="text-input" placeholder="Company name" value={manualCompany}
+            onChange={(e) => setManualCompany(e.target.value)} style={{ marginBottom: 10 }} />
+          <textarea className="text-input" rows={5}
+            placeholder={"Senior Product Designer | San Francisco, CA | https://example.com/careers/123\nBackend Engineer | Remote | https://example.com/careers/124"}
+            value={manualText} onChange={(e) => setManualText(e.target.value)} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+            <span className="muted" style={{ fontSize: 13 }}>{manualJobs.length} job(s) parsed</span>
+            <button className="btn" disabled={importing || !manualCompany.trim() || manualJobs.length === 0}>
+              {importing ? "Importing…" : "Import"}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div className="admin-section">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <h2 style={{ margin: 0 }}>Sources ({sources.length})</h2>
           <button className="btn secondary sm" disabled={refreshingAll || sources.length === 0}
@@ -157,7 +213,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                   <tr key={s.id}>
                     <td>
                       <b>{s.company}</b>
-                      <div><a href={s.url} target="_blank" rel="noreferrer" className="muted" style={{ fontSize: 12.5 }}>{s.url}</a></div>
+                      <div>
+                        {s.ats === "manual" ? (
+                          <span className="muted" style={{ fontSize: 12.5 }}>Manually imported</span>
+                        ) : (
+                          <a href={s.url} target="_blank" rel="noreferrer" className="muted" style={{ fontSize: 12.5 }}>{s.url}</a>
+                        )}
+                      </div>
                     </td>
                     <td><span className="ats-chip">{s.ats}</span></td>
                     <td>
@@ -167,10 +229,12 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                     <td>{s.job_count}</td>
                     <td className="muted">{s.last_fetched_at ? timeAgo(s.last_fetched_at + "Z") : "—"}</td>
                     <td style={{ whiteSpace: "nowrap" }}>
-                      <button className="btn secondary sm" disabled={busyIds.has(s.id)}
-                        onClick={() => withBusy(s.id, () => api.admin.refreshSource(s.id))}>
-                        {busyIds.has(s.id) ? "…" : "⟳"}
-                      </button>{" "}
+                      {s.ats !== "manual" && (
+                        <button className="btn secondary sm" disabled={busyIds.has(s.id)}
+                          onClick={() => withBusy(s.id, () => api.admin.refreshSource(s.id))}>
+                          {busyIds.has(s.id) ? "…" : "⟳"}
+                        </button>
+                      )}{" "}
                       <button className="btn danger sm" disabled={busyIds.has(s.id)}
                         onClick={() => {
                           if (confirm(`Delete ${s.company} and all its jobs?`)) {

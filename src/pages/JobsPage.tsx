@@ -4,23 +4,22 @@ import { api, type Facets, type Job } from "../api";
 import JobCard from "../components/JobCard";
 import FilterPanel from "../components/FilterPanel";
 
+const PAGE_SIZE = 20;
+
 export default function JobsPage() {
   const [params, setParams] = useSearchParams();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [facets, setFacets] = useState<Facets | null>(null);
   const debounceRef = useRef<number>();
-
-  const page = Number(params.get("page") ?? 1);
-  const limit = 20;
 
   const get = (k: string) => params.get(k) ?? "";
   const getList = (k: string) => (params.get(k) ? params.get(k)!.split(",") : []);
   const set = (k: string, v: string) => {
     const next = new URLSearchParams(params);
     if (v) next.set(k, v); else next.delete(k);
-    if (k !== "page") next.delete("page");
     setParams(next, { replace: true });
   };
   const toggleList = (k: string, v: string) => {
@@ -32,21 +31,34 @@ export default function JobsPage() {
     api.facets().then(setFacets).catch(() => {});
   }, []);
 
+  // Filters/search changed: reset and fetch page 1 (debounced so typing doesn't spam requests)
   useEffect(() => {
     setLoading(true);
     window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
       const q = new URLSearchParams(params);
-      q.set("limit", String(limit));
+      q.set("limit", String(PAGE_SIZE));
       api.jobs(q)
         .then((r) => { setJobs(r.jobs); setTotal(r.total); })
         .catch(() => { setJobs([]); setTotal(0); })
         .finally(() => setLoading(false));
     }, 250);
     return () => window.clearTimeout(debounceRef.current);
-  }, [params]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.toString()]);
 
-  const pages = Math.max(1, Math.ceil(total / limit));
+  const loadMore = () => {
+    setLoadingMore(true);
+    const q = new URLSearchParams(params);
+    q.set("limit", String(PAGE_SIZE));
+    q.set("offset", String(jobs.length));
+    api.jobs(q)
+      .then((r) => setJobs((prev) => [...prev, ...r.jobs]))
+      .catch(() => {})
+      .finally(() => setLoadingMore(false));
+  };
+
+  const hasMore = jobs.length < total;
 
   return (
     <div>
@@ -77,7 +89,7 @@ export default function JobsPage() {
             {loading ? "Searching…" : `${total.toLocaleString()} position${total === 1 ? "" : "s"} found`}
           </p>
           {loading ? (
-            <div className="spinner" />
+            <JobListSkeleton />
           ) : jobs.length === 0 ? (
             <div className="panel empty">
               <b>No positions match these filters.</b>
@@ -88,19 +100,33 @@ export default function JobsPage() {
               <div className="job-list">
                 {jobs.map((j) => <JobCard key={j.id} job={j} />)}
               </div>
-              {pages > 1 && (
-                <div className="pagination">
-                  <button className="btn secondary sm" disabled={page <= 1}
-                    onClick={() => set("page", String(page - 1))}>← Prev</button>
-                  <span className="page-info">Page {page} of {pages}</span>
-                  <button className="btn secondary sm" disabled={page >= pages}
-                    onClick={() => set("page", String(page + 1))}>Next →</button>
+              {hasMore && (
+                <div className="load-more-row">
+                  <button className="btn secondary" disabled={loadingMore} onClick={loadMore}>
+                    {loadingMore ? "Loading…" : `Load more (${total - jobs.length} remaining)`}
+                  </button>
                 </div>
               )}
             </>
           )}
         </section>
       </div>
+    </div>
+  );
+}
+
+function JobListSkeleton() {
+  return (
+    <div className="job-list">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="panel job-card skeleton">
+          <div className="sk-line sk-title" />
+          <div className="sk-line sk-sub" />
+          <div className="sk-badges">
+            <span className="sk-badge" /><span className="sk-badge" /><span className="sk-badge" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

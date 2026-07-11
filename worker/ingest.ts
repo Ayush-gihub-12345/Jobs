@@ -290,3 +290,29 @@ export async function fetchJobsForSource(ats: string, atsRef: string): Promise<F
     default: throw new Error(`Unknown ATS: ${ats}`);
   }
 }
+
+/**
+ * "manual" sources have no live API to poll (e.g. jobs copied from a LinkedIn company page,
+ * which blocks automated scraping) — admin pastes entries once and normalizes them through
+ * the same pipeline as every other ATS. Never called by the sync/cron loop.
+ */
+export interface ManualJobInput {
+  title: string;
+  url: string;
+  location?: string;
+}
+
+export function buildManualJobs(entries: ManualJobInput[]): NormalizedJob[] {
+  return entries.map((e, i) =>
+    finishJob({
+      externalId: `manual-${i}`,
+      title: e.title,
+      location: e.location ?? "",
+      applyUrl: e.url,
+    })
+  );
+}
+
+export function slugify(s: string): string {
+  return s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "company";
+}

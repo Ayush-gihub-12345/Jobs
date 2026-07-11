@@ -47,6 +47,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+async function authedRequest<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    ...init,
+    headers: {
+      ...(init?.body ? { "content-type": "application/json" } : {}),
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data as any).error ?? `Request failed (${res.status})`);
+  return data as T;
+}
+
+export interface Preferences {
+  locations: string[];
+  remoteOnly: boolean;
+  salaryMin: number | null;
+  salaryMax: number | null;
+  currency: string;
+  jobTypes: string[];
+  categories: string[];
+  skills: string[];
+  experienceLevel: string | null;
+}
+
 export const api = {
   jobs: (params: URLSearchParams) =>
     request<{ jobs: Job[]; total: number; page: number; limit: number }>(`/api/jobs?${params}`),
@@ -71,12 +96,21 @@ export const api = {
         `/api/admin/sources/${id}/refresh`, { method: "POST" }),
     refreshAll: () => request<{ sources: Source[] }>(`/api/admin/refresh-all`, { method: "POST" }),
     deleteSource: (id: number) => request(`/api/admin/sources/${id}`, { method: "DELETE" }),
+    importManual: (company: string, jobs: { title: string; url: string; location?: string }[]) =>
+      request<{ source: Source; count: number }>(
+        `/api/admin/sources/manual`, { method: "POST", body: JSON.stringify({ company, jobs }) }),
     stats: () =>
       request<{
         totalJobs: number; totalSources: number; sourceErrors: number;
         byType: { k: string; n: number }[]; byLevel: { k: string; n: number }[];
         byCategory: { k: string; n: number }[];
       }>(`/api/admin/stats`),
+  },
+  me: {
+    get: (token: string) => authedRequest<{ uid: string; email: string; name: string | null }>(`/api/me`, token),
+    getPreferences: (token: string) => authedRequest<Preferences>(`/api/me/preferences`, token),
+    savePreferences: (token: string, prefs: Preferences) =>
+      authedRequest<{ ok: boolean }>(`/api/me/preferences`, token, { method: "PUT", body: JSON.stringify(prefs) }),
   },
 };
 

@@ -104,8 +104,8 @@ export default function LinkedInPage() {
       <div className="li-hero">
         <h1>LinkedIn</h1>
         <p>
-          Search open positions against your resume with the same rich filters used across JobHub.
-          Results are drawn from JobHub's aggregated listings, not scraped from linkedin.com.
+          Search open positions against your resume with the same rich filters used across hireers.
+          Results are drawn from hireers' aggregated listings, not scraped from linkedin.com.
         </p>
       </div>
 

@@ -1,15 +1,21 @@
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import { detectAts, fetchJobsForSource, type NormalizedJob } from "./ingest";
+import {
+  detectAts, fetchJobsForSource, buildManualJobs, slugify,
+  type ManualJobInput, type NormalizedJob,
+} from "./ingest";
+import { hashJob } from "./hash";
 import { extractSkills, parseExperience, SKILLS } from "./extract";
+import { verifyFirebaseToken, type FirebaseUser } from "./firebaseAuth";
 
 interface Env {
   DB: D1Database;
   ADMIN_USERNAME: string;
   ADMIN_PASSWORD: string;
+  FIREBASE_PROJECT_ID: string;
 }
 
-type App = { Bindings: Env };
+type App = { Bindings: Env; Variables: { user: FirebaseUser } };
 const app = new Hono<App>();
 
 /* ---------------- auth ---------------- */
@@ -78,43 +84,153 @@ app.use("/api/admin/*", async (c, next) => {
   return next();
 });
 
+/* ---------------- end-user auth (Firebase) ---------------- */
+
+async function requireUser(c: any, next: any) {
+  const authHeader = c.req.header("Authorization") ?? "";
+  const idToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  const user = await verifyFirebaseToken(idToken, c.env.FIREBASE_PROJECT_ID);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  await c.env.DB.prepare(`
+    INSERT INTO users (uid, email, name) VALUES (?, ?, ?)
+    ON CONFLICT(uid) DO UPDATE SET email = excluded.email, name = excluded.name, last_login_at = datetime('now')
+  `).bind(user.uid, user.email, user.name).run();
+
+  c.set("user", user);
+  await next();
+}
+
+app.use("/api/me/*", requireUser);
+
+app.get("/api/me", (c) => {
+  const user = c.get("user");
+  return c.json({ uid: user.uid, email: user.email, name: user.name });
+});
+
+app.get("/api/me/preferences", async (c) => {
+  const uid = c.get("user").uid;
+  const row = await c.env.DB.prepare(`SELECT * FROM preferences WHERE uid = ?`).bind(uid).first<any>();
+  if (!row) {
+    return c.json({
+      locations: [], remoteOnly: false, salaryMin: null, salaryMax: null, currency: "USD",
+      jobTypes: [], categories: [], skills: [], experienceLevel: null,
+    });
+  }
+  return c.json({
+    locations: JSON.parse(row.locations),
+    remoteOnly: !!row.remote_only,
+    salaryMin: row.salary_min,
+    salaryMax: row.salary_max,
+    currency: row.currency,
+    jobTypes: JSON.parse(row.job_types),
+    categories: JSON.parse(row.categories),
+    skills: JSON.parse(row.skills),
+    experienceLevel: row.experience_level,
+  });
+});
+
+app.put("/api/me/preferences", async (c) => {
+  const uid = c.get("user").uid;
+  const body = await c.req.json<{
+    locations?: string[]; remoteOnly?: boolean; salaryMin?: number | null; salaryMax?: number | null;
+    currency?: string; jobTypes?: string[]; categories?: string[]; skills?: string[]; experienceLevel?: string | null;
+  }>();
+  await c.env.DB.prepare(`
+    INSERT INTO preferences (uid, locations, remote_only, salary_min, salary_max, currency, job_types, categories, skills, experience_level, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(uid) DO UPDATE SET
+      locations=excluded.locations, remote_only=excluded.remote_only, salary_min=excluded.salary_min,
+      salary_max=excluded.salary_max, currency=excluded.currency, job_types=excluded.job_types,
+      categories=excluded.categories, skills=excluded.skills, experience_level=excluded.experience_level,
+      updated_at=datetime('now')
+  `).bind(
+    uid, JSON.stringify(body.locations ?? []), body.remoteOnly ? 1 : 0,
+    body.salaryMin ?? null, body.salaryMax ?? null, body.currency ?? "USD",
+    JSON.stringify(body.jobTypes ?? []), JSON.stringify(body.categories ?? []),
+    JSON.stringify(body.skills ?? []), body.experienceLevel ?? null
+  ).run();
+  return c.json({ ok: true });
+});
+
 /* ---------------- sync engine ---------------- */
+
+const UPSERT_JOB_SQL = `
+  INSERT INTO jobs (source_id, external_id, title, company, location, remote, job_type, level,
+                    exp_min, exp_max, role_category, skills, description, apply_url, posted_at, content_hash)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(source_id, external_id) DO UPDATE SET
+    title=excluded.title, company=excluded.company, location=excluded.location,
+    remote=excluded.remote, job_type=excluded.job_type, level=excluded.level,
+    exp_min=excluded.exp_min, exp_max=excluded.exp_max, role_category=excluded.role_category,
+    skills=excluded.skills, description=excluded.description,
+    apply_url=excluded.apply_url, posted_at=excluded.posted_at, content_hash=excluded.content_hash
+`;
+
+function bindUpsert(stmt: D1PreparedStatement, sourceId: number, company: string, j: NormalizedJob, hash: string) {
+  return stmt.bind(
+    sourceId, j.externalId, j.title, company, j.location, j.remote ? 1 : 0,
+    j.jobType, j.level, j.expMin, j.expMax, j.roleCategory,
+    JSON.stringify(j.skills), j.description, j.applyUrl, j.postedAt, hash
+  );
+}
+
+async function runBatched(db: D1Database, stmts: D1PreparedStatement[]) {
+  // D1 batches are transactional; chunk to stay under per-batch statement limits
+  for (let i = 0; i < stmts.length; i += 90) {
+    await db.batch(stmts.slice(i, i + 90));
+  }
+}
+
+/**
+ * Used for hand-pasted (manual) sources only — small, infrequent, simplicity beats efficiency here.
+ */
+async function replaceSourceJobs(db: D1Database, sourceId: number, company: string, jobs: NormalizedJob[]) {
+  const stmts: D1PreparedStatement[] = [db.prepare(`DELETE FROM jobs WHERE source_id = ?`).bind(sourceId)];
+  const upsert = db.prepare(UPSERT_JOB_SQL);
+  for (const j of jobs) stmts.push(bindUpsert(upsert, sourceId, company, j, hashJob(j)));
+  stmts.push(db.prepare(
+    `UPDATE sources SET status='ok', error=NULL, company=?, job_count=?, last_fetched_at=datetime('now') WHERE id=?`
+  ).bind(company, jobs.length, sourceId));
+  await runBatched(db, stmts);
+}
+
+/**
+ * Used for the hourly ATS sync. Diffs against stored content hashes so unchanged jobs
+ * (the overwhelming majority on any given hour) never trigger a write — this is what keeps
+ * the site inside D1's free-tier row-write quota as more sources are added.
+ */
+async function diffSyncJobs(db: D1Database, sourceId: number, company: string, jobs: NormalizedJob[]) {
+  const { results: existing } = await db.prepare(
+    `SELECT external_id, content_hash FROM jobs WHERE source_id = ?`
+  ).bind(sourceId).all<{ external_id: string; content_hash: string | null }>();
+  const existingHash = new Map(existing.map((r) => [r.external_id, r.content_hash]));
+  const incomingIds = new Set(jobs.map((j) => j.externalId));
+
+  const stmts: D1PreparedStatement[] = [];
+  const upsert = db.prepare(UPSERT_JOB_SQL);
+  for (const j of jobs) {
+    const hash = hashJob(j);
+    if (existingHash.get(j.externalId) === hash) continue; // unchanged — skip the write entirely
+    stmts.push(bindUpsert(upsert, sourceId, company, j, hash));
+  }
+  const staleIds = [...existingHash.keys()].filter((id) => !incomingIds.has(id));
+  for (let i = 0; i < staleIds.length; i += 80) {
+    const chunk = staleIds.slice(i, i + 80);
+    stmts.push(db.prepare(
+      `DELETE FROM jobs WHERE source_id = ? AND external_id IN (${chunk.map(() => "?").join(",")})`
+    ).bind(sourceId, ...chunk));
+  }
+  stmts.push(db.prepare(
+    `UPDATE sources SET status='ok', error=NULL, company=?, job_count=?, last_fetched_at=datetime('now') WHERE id=?`
+  ).bind(company, jobs.length, sourceId));
+  await runBatched(db, stmts);
+}
 
 async function syncSource(db: D1Database, source: { id: number; ats: string; ats_ref: string }) {
   try {
     const { company, jobs } = await fetchJobsForSource(source.ats, source.ats_ref);
-
-    // Replace the source's jobs wholesale (D1 caps bound params per statement,
-    // so a NOT IN (...) stale-delete with hundreds of ids is not an option)
-    const stmts: D1PreparedStatement[] = [
-      db.prepare(`DELETE FROM jobs WHERE source_id = ?`).bind(source.id),
-    ];
-    const upsert = db.prepare(`
-      INSERT INTO jobs (source_id, external_id, title, company, location, remote, job_type, level,
-                        exp_min, exp_max, role_category, skills, description, apply_url, posted_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(source_id, external_id) DO UPDATE SET
-        title=excluded.title, company=excluded.company, location=excluded.location,
-        remote=excluded.remote, job_type=excluded.job_type, level=excluded.level,
-        exp_min=excluded.exp_min, exp_max=excluded.exp_max, role_category=excluded.role_category,
-        skills=excluded.skills, description=excluded.description,
-        apply_url=excluded.apply_url, posted_at=excluded.posted_at
-    `);
-    for (const j of jobs) {
-      stmts.push(upsert.bind(
-        source.id, j.externalId, j.title, company, j.location, j.remote ? 1 : 0,
-        j.jobType, j.level, j.expMin, j.expMax, j.roleCategory,
-        JSON.stringify(j.skills), j.description, j.applyUrl, j.postedAt
-      ));
-    }
-    stmts.push(db.prepare(
-      `UPDATE sources SET status='ok', error=NULL, company=?, job_count=?, last_fetched_at=datetime('now') WHERE id=?`
-    ).bind(company, jobs.length, source.id));
-
-    // D1 batches are transactional; chunk to stay under statement limits
-    for (let i = 0; i < stmts.length; i += 90) {
-      await db.batch(stmts.slice(i, i + 90));
-    }
+    await diffSyncJobs(db, source.id, company, jobs);
     return { ok: true, count: jobs.length };
   } catch (e: any) {
     await db.prepare(
@@ -125,7 +241,8 @@ async function syncSource(db: D1Database, source: { id: number; ats: string; ats
 }
 
 async function syncAll(db: D1Database) {
-  const { results } = await db.prepare(`SELECT id, ats, ats_ref FROM sources`).all<any>();
+  // "manual" sources have no live API — they're only updated when re-imported from the admin panel
+  const { results } = await db.prepare(`SELECT id, ats, ats_ref FROM sources WHERE ats != 'manual'`).all<any>();
   for (const s of results) await syncSource(db, s);
 }
 
@@ -161,9 +278,41 @@ app.post("/api/admin/sources/:id/refresh", async (c) => {
   const source = await c.env.DB.prepare(`SELECT id, ats, ats_ref FROM sources WHERE id = ?`)
     .bind(id).first<any>();
   if (!source) return c.json({ error: "Not found" }, 404);
+  if (source.ats === "manual") {
+    return c.json({ error: "Manual sources have no live feed — re-import to update them" }, 400);
+  }
   const sync = await syncSource(c.env.DB, source);
   const updated = await c.env.DB.prepare(`SELECT * FROM sources WHERE id = ?`).bind(id).first();
   return c.json({ source: updated, sync });
+});
+
+// Bulk-import hand-entered listings (e.g. copied from a LinkedIn company jobs page, which
+// blocks automated scraping and can't be pulled through a public API like the other ATSes).
+app.post("/api/admin/sources/manual", async (c) => {
+  const { company, jobs } = await c.req.json<{ company: string; jobs: ManualJobInput[] }>();
+  if (!company?.trim()) return c.json({ error: "Company name is required" }, 400);
+  const validJobs = (jobs ?? []).filter((j) => j.title?.trim() && j.url?.trim());
+  if (validJobs.length === 0) return c.json({ error: "Add at least one job with a title and URL" }, 400);
+
+  const slug = slugify(company);
+  const url = `manual://${slug}`;
+  const db = c.env.DB;
+  const existing = await db.prepare(`SELECT id FROM sources WHERE url = ?`).bind(url).first<{ id: number }>();
+
+  let sourceId: number;
+  if (existing) {
+    sourceId = existing.id;
+  } else {
+    const created = await db.prepare(
+      `INSERT INTO sources (url, company, ats, ats_ref) VALUES (?, ?, 'manual', ?) RETURNING id`
+    ).bind(url, company.trim(), slug).first<{ id: number }>();
+    sourceId = created!.id;
+  }
+
+  const normalized = buildManualJobs(validJobs);
+  await replaceSourceJobs(db, sourceId, company.trim(), normalized);
+  const source = await db.prepare(`SELECT * FROM sources WHERE id = ?`).bind(sourceId).first();
+  return c.json({ source, count: normalized.length }, 201);
 });
 
 app.post("/api/admin/refresh-all", async (c) => {
@@ -284,8 +433,12 @@ function parseFilters(c: any): JobFilters {
 
 app.get("/api/jobs", async (c) => {
   const f = parseFilters(c);
-  const page = Math.max(1, Number(c.req.query("page") ?? 1));
   const limit = Math.min(50, Math.max(1, Number(c.req.query("limit") ?? 20)));
+  // "offset" drives the Load More pattern (append to an existing list); "page" is a fallback
+  // for direct API callers that still think in pages.
+  const offsetParam = c.req.query("offset");
+  const page = Math.max(1, Number(c.req.query("page") ?? 1));
+  const offset = offsetParam !== undefined ? Math.max(0, Number(offsetParam)) : (page - 1) * limit;
   const sort = c.req.query("sort") === "company"
     ? "jobs.company ASC, jobs.title ASC"
     : "jobs.posted_at IS NULL, jobs.posted_at DESC, jobs.id DESC";
@@ -294,7 +447,7 @@ app.get("/api/jobs", async (c) => {
   const db = c.env.DB;
   const [rows, count] = await Promise.all([
     db.prepare(`SELECT * FROM jobs ${where} ORDER BY ${sort} LIMIT ? OFFSET ?`)
-      .bind(...params, limit, (page - 1) * limit).all(),
+      .bind(...params, limit, offset).all(),
     db.prepare(`SELECT COUNT(*) n FROM jobs ${where}`).bind(...params).first<any>(),
   ]);
   const jobs = rows.results.map((j: any) => ({

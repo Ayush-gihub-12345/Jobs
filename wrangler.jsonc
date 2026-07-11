@@ -6,6 +6,10 @@
   "assets": {
     "not_found_handling": "single-page-application"
   },
+  "vars": {
+    // Firebase project ID (not a secret) — must match VITE_FIREBASE_PROJECT_ID
+    "FIREBASE_PROJECT_ID": "REPLACE_WITH_YOUR_FIREBASE_PROJECT_ID"
+  },
   "d1_databases": [
     {
       "binding": "DB",
