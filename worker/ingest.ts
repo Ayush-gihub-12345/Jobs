@@ -76,6 +76,33 @@ async function fetchJson(url: string): Promise<any> {
 const titleCase = (s: string) =>
   s.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim();
 
+const BLOCKED_HOSTS: { pattern: RegExp; reason: string }[] = [
+  {
+    pattern: /(^|\.)linkedin\.com$/,
+    reason: "LinkedIn blocks automated access and its Terms of Service prohibit scraping. " +
+      "Use the bulk-import tool below to paste listings by hand, or add the company's own " +
+      "career page (Greenhouse/Lever/etc.) instead.",
+  },
+  {
+    pattern: /(^|\.)naukri\.com$/,
+    reason: "Naukri blocks automated access (even its robots.txt returns 403 to bots). " +
+      "Use the bulk-import tool below to paste listings by hand, or add the company's own " +
+      "career page instead.",
+  },
+];
+
+/** Returns a user-facing reason if this host is known to block automated access — checked
+ *  before detectAts() so we can reject it with a clear message instead of a confusing error. */
+export function blockedHostReason(rawUrl: string): string | null {
+  let host: string;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  return BLOCKED_HOSTS.find((b) => b.pattern.test(host))?.reason ?? null;
+}
+
 /** Figure out which ATS a career URL belongs to. */
 export function detectAts(rawUrl: string): DetectedSource | null {
   let u: URL;
@@ -111,6 +138,21 @@ export function detectAts(rawUrl: string): DetectedSource | null {
   if (host.endsWith(".recruitee.com")) {
     const ref = host.split(".")[0];
     if (ref) return { ats: "recruitee", atsRef: ref, company: titleCase(ref) };
+  }
+  // These HRMS/ATS platforms are widely used by India-based companies. None expose a
+  // documented public jobs API, but their career pages commonly carry Google-for-Jobs
+  // JSON-LD markup — so they're routed through the same generic scraper, just labeled
+  // for clarity rather than lumped in as "generic".
+  const indiaAts: [RegExp, string][] = [
+    [/\.zohorecruit\.com$/, "zoho-recruit"],
+    [/\.freshteam\.com$/, "freshteam"],
+    [/\.(keka|kekahr)\.com$/, "keka"],
+    [/\.darwinbox\.(in|com)$/, "darwinbox"],
+  ];
+  for (const [pattern, ats] of indiaAts) {
+    if (pattern.test(host)) {
+      return { ats, atsRef: rawUrl, company: titleCase(host.split(".")[0]) };
+    }
   }
   // Unknown host: generic JSON-LD scrape fallback
   return { ats: "generic", atsRef: rawUrl, company: titleCase(host.replace(/^(www|careers|jobs)\./, "").split(".")[0]) };
@@ -286,7 +328,12 @@ export async function fetchJobsForSource(ats: string, atsRef: string): Promise<F
     case "workable": return fetchWorkable(atsRef);
     case "smartrecruiters": return fetchSmartRecruiters(atsRef);
     case "recruitee": return fetchRecruitee(atsRef);
-    case "generic": return fetchGeneric(atsRef);
+    case "generic":
+    case "zoho-recruit":
+    case "freshteam":
+    case "keka":
+    case "darwinbox":
+      return fetchGeneric(atsRef);
     default: throw new Error(`Unknown ATS: ${ats}`);
   }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, timeAgo, type Source } from "../api";
+import { api, timeAgo, type Source, type WatchlistEntry } from "../api";
 
 type Stats = Awaited<ReturnType<typeof api.admin.stats>>;
 
@@ -61,6 +61,7 @@ function parseManualJobs(text: string): { title: string; url: string; location?:
 function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [sources, setSources] = useState<Source[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [watchlist, setWatchlist] = useState<WatchlistEntry[]>([]);
   const [newUrl, setNewUrl] = useState("");
   const [adding, setAdding] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -69,13 +70,40 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [manualCompany, setManualCompany] = useState("");
   const [manualText, setManualText] = useState("");
   const [importing, setImporting] = useState(false);
+  const [watchUrl, setWatchUrl] = useState("");
+  const [watching, setWatching] = useState(false);
+  const [watchBusyIds, setWatchBusyIds] = useState<Set<number>>(new Set());
 
   const load = async () => {
-    const [s, st] = await Promise.all([api.admin.sources(), api.admin.stats()]);
+    const [s, st, w] = await Promise.all([api.admin.sources(), api.admin.stats(), api.admin.watchlist()]);
     setSources(s.sources);
     setStats(st);
+    setWatchlist(w.watchlist);
   };
   useEffect(() => { load().catch(() => {}); }, []);
+
+  const addWatch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setWatching(true);
+    setNotice(null);
+    try {
+      const res = await api.admin.addWatchlist(watchUrl.trim());
+      setNotice({ kind: "ok", text: `Added ${res.entry.company} to the live-match watchlist.` });
+      setWatchUrl("");
+      await load();
+    } catch (err: any) {
+      setNotice({ kind: "error", text: err.message });
+    } finally {
+      setWatching(false);
+    }
+  };
+
+  const removeWatch = async (id: number) => {
+    setWatchBusyIds((s) => new Set(s).add(id));
+    try { await api.admin.deleteWatchlist(id); await load(); }
+    catch (err: any) { setNotice({ kind: "error", text: err.message }); }
+    finally { setWatchBusyIds((s) => { const n = new Set(s); n.delete(id); return n; }); }
+  };
 
   const addSource = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -154,16 +182,17 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <div className="help-box">
           Paste any company career page link. Supported automatically: <b>Greenhouse</b> (boards.greenhouse.io/…),{" "}
           <b>Lever</b> (jobs.lever.co/…), <b>Ashby</b> (jobs.ashbyhq.com/…), <b>Workable</b> (apply.workable.com/…),{" "}
-          <b>SmartRecruiters</b>, <b>Recruitee</b>, plus any page with JSON-LD job markup.
-          All sources auto-refresh every hour.
+          <b>SmartRecruiters</b>, <b>Recruitee</b>, <b>Zoho Recruit</b>, <b>Freshteam</b>, <b>Keka</b>,{" "}
+          <b>Darwinbox</b>, plus any page with JSON-LD job markup. All sources auto-refresh every hour.{" "}
+          <b>LinkedIn and Naukri links are rejected</b> — both block automated access; use bulk-import below instead.
         </div>
       </div>
 
       <div className="admin-section">
         <h2>Bulk-import company jobs</h2>
         <div className="help-box" style={{ marginTop: 0, marginBottom: 14 }}>
-          For companies without a public ATS feed — e.g. jobs listed on their LinkedIn page.
-          LinkedIn blocks automated scraping, so paste each listing by hand: one job per line,
+          For companies without a fetchable feed — e.g. jobs listed only on their LinkedIn or Naukri
+          page. Both block automated scraping, so paste each listing by hand: one job per line,
           formatted <code>Title | Location | Apply URL</code> (location optional). Re-import the
           same company name any time to replace its listings with an updated paste.
         </div>
@@ -180,6 +209,35 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
             </button>
           </div>
         </form>
+      </div>
+
+      <div className="admin-section">
+        <h2>Live resume-match watchlist ({watchlist.length}/20)</h2>
+        <div className="help-box" style={{ marginTop: 0, marginBottom: 14 }}>
+          Companies here aren't imported into Browse Jobs — instead, every time someone runs a
+          resume match, hireers fetches these career pages live and includes anything that's a
+          strong match (80%+) posted in the last 15 days. Nothing from this list is stored in
+          the database. Capped at 20 to keep each resume search fast and within a single
+          Worker request's subrequest limit.
+        </div>
+        <form className="form-row" onSubmit={addWatch}>
+          <input className="text-input" placeholder="Career page link (same platforms as above)"
+            value={watchUrl} onChange={(e) => setWatchUrl(e.target.value)} />
+          <button className="btn" disabled={watching || !watchUrl.trim() || watchlist.length >= 20}>
+            {watching ? "Adding…" : "Add to watchlist"}
+          </button>
+        </form>
+        {watchlist.length > 0 && (
+          <div className="tag-list" style={{ marginTop: 12 }}>
+            {watchlist.map((w) => (
+              <span key={w.id} className="tag on">
+                {w.company}
+                <button type="button" className="tag-remove" disabled={watchBusyIds.has(w.id)}
+                  onClick={() => removeWatch(w.id)}>✕</button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="admin-section">

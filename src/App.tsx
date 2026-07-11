@@ -8,7 +8,6 @@ import { ThemeProvider } from "./context/ThemeContext";
 
 // Route-level code splitting: only Jobs (the landing page) ships in the initial bundle.
 const MatchPage = lazy(() => import("./pages/MatchPage"));
-const LinkedInPage = lazy(() => import("./pages/LinkedInPage"));
 const AdminPage = lazy(() => import("./pages/AdminPage"));
 const PreferencesPage = lazy(() => import("./pages/PreferencesPage"));
 const ProfilePage = lazy(() => import("./pages/ProfilePage"));
@@ -21,7 +20,6 @@ const PRIMARY_NAV = [
     match: (loc: { pathname: string; search: string }) => loc.pathname === "/" && loc.search === "?types=internship" },
   { label: "Entry Level", to: "/?levels=entry",
     match: (loc: { pathname: string; search: string }) => loc.pathname === "/" && loc.search === "?levels=entry" },
-  { label: "LinkedIn", to: "/linkedin", match: (loc: { pathname: string }) => loc.pathname === "/linkedin" },
   { label: "Resume Match", to: "/match", match: (loc: { pathname: string }) => loc.pathname === "/match" },
 ];
 
@@ -67,7 +65,6 @@ function AppShell() {
           <Routes>
             <Route path="/" element={<JobsPage />} />
             <Route path="/match" element={<MatchPage />} />
-            <Route path="/linkedin" element={<LinkedInPage />} />
             <Route path="/preferences" element={<PreferencesPage />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/admin" element={<AdminPage />} />

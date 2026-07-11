@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import type { Facets } from "../api";
-import { FILTER_KEYS } from "../lib/useFilterState";
-import { JOB_TYPES as TYPES, LEVELS, CATEGORIES, POSTED_WITHIN as POSTED } from "../lib/filterOptions";
+import {
+  JOB_TYPES as TYPES, LEVELS, CATEGORIES, POSTED_WITHIN as POSTED, FILTER_KEYS,
+} from "../lib/filterOptions";
 
 interface Props {
   get: (k: string) => string;

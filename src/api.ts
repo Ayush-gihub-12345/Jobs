@@ -16,6 +16,8 @@ export interface Job {
   posted_at: string | null;
   matchedSkills?: string[];
   score?: number;
+  /** Fetched live from the company's career page for this match request — never written to the DB. */
+  live?: boolean;
 }
 
 export interface Source {
@@ -35,6 +37,15 @@ export interface Facets {
   locations: { k: string; n: number }[];
   skills: { k: string; n: number }[];
   allSkills: string[];
+}
+
+export interface WatchlistEntry {
+  id: number;
+  url: string;
+  company: string;
+  ats: string;
+  ats_ref: string;
+  created_at: string;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -105,6 +116,10 @@ export const api = {
         byType: { k: string; n: number }[]; byLevel: { k: string; n: number }[];
         byCategory: { k: string; n: number }[];
       }>(`/api/admin/stats`),
+    watchlist: () => request<{ watchlist: WatchlistEntry[] }>(`/api/admin/watchlist`),
+    addWatchlist: (url: string) =>
+      request<{ entry: WatchlistEntry }>(`/api/admin/watchlist`, { method: "POST", body: JSON.stringify({ url }) }),
+    deleteWatchlist: (id: number) => request(`/api/admin/watchlist/${id}`, { method: "DELETE" }),
   },
   me: {
     get: (token: string) => authedRequest<{ uid: string; email: string; name: string | null }>(`/api/me`, token),

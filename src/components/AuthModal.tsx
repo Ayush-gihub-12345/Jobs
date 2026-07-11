@@ -56,7 +56,7 @@ export default function AuthModal({ onClose }: { onClose: () => void }) {
         ) : (
           <>
             <button type="button" className="btn secondary google-btn" onClick={google} disabled={busy}>
-              Continue with Google
+              {mode === "signup" ? "Sign up with Google" : "Sign in with Google"}
             </button>
             <div className="divider"><span>or</span></div>
 

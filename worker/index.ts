@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import {
-  detectAts, fetchJobsForSource, buildManualJobs, slugify,
+  detectAts, fetchJobsForSource, buildManualJobs, slugify, blockedHostReason,
   type ManualJobInput, type NormalizedJob,
 } from "./ingest";
 import { hashJob } from "./hash";
@@ -257,6 +257,8 @@ app.get("/api/admin/sources", async (c) => {
 
 app.post("/api/admin/sources", async (c) => {
   const { url } = await c.req.json<{ url: string }>();
+  const blocked = blockedHostReason((url ?? "").trim());
+  if (blocked) return c.json({ error: blocked }, 400);
   const detected = detectAts((url ?? "").trim());
   if (!detected) return c.json({ error: "Invalid URL" }, 400);
 
@@ -313,6 +315,41 @@ app.post("/api/admin/sources/manual", async (c) => {
   await replaceSourceJobs(db, sourceId, company.trim(), normalized);
   const source = await db.prepare(`SELECT * FROM sources WHERE id = ?`).bind(sourceId).first();
   return c.json({ source, count: normalized.length }, 201);
+});
+
+/* ---------------- admin: live-match watchlist ---------------- */
+// Companies queried live during resume matching (in addition to imported `sources`). Never
+// synced into `jobs` — capped to keep each /api/match request's subrequest count bounded.
+const WATCHLIST_MAX = 20;
+
+app.get("/api/admin/watchlist", async (c) => {
+  const { results } = await c.env.DB.prepare(`SELECT * FROM watchlist ORDER BY created_at DESC`).all();
+  return c.json({ watchlist: results });
+});
+
+app.post("/api/admin/watchlist", async (c) => {
+  const { url } = await c.req.json<{ url: string }>();
+  const blocked = blockedHostReason((url ?? "").trim());
+  if (blocked) return c.json({ error: blocked }, 400);
+  const detected = detectAts((url ?? "").trim());
+  if (!detected) return c.json({ error: "Invalid URL" }, 400);
+
+  const { n } = (await c.env.DB.prepare(`SELECT COUNT(*) n FROM watchlist`).first<{ n: number }>())!;
+  if (n >= WATCHLIST_MAX) {
+    return c.json({ error: `Live-match watchlist is capped at ${WATCHLIST_MAX} companies to keep each resume search fast and within Workers' subrequest limit.` }, 400);
+  }
+  const existing = await c.env.DB.prepare(`SELECT id FROM watchlist WHERE url = ?`).bind(url.trim()).first();
+  if (existing) return c.json({ error: "Already on the watchlist" }, 409);
+
+  const created = await c.env.DB.prepare(
+    `INSERT INTO watchlist (url, company, ats, ats_ref) VALUES (?, ?, ?, ?) RETURNING *`
+  ).bind(url.trim(), detected.company, detected.ats, detected.atsRef).first();
+  return c.json({ entry: created }, 201);
+});
+
+app.delete("/api/admin/watchlist/:id", async (c) => {
+  await c.env.DB.prepare(`DELETE FROM watchlist WHERE id = ?`).bind(Number(c.req.param("id"))).run();
+  return c.json({ ok: true });
 });
 
 app.post("/api/admin/refresh-all", async (c) => {
@@ -486,6 +523,75 @@ app.get("/api/facets", async (c) => {
 
 /* ---------------- resume matching ---------------- */
 
+/** Shared scoring formula for both stored-DB matches and live cross-company matches. */
+function scoreJob(
+  jobSkills: string[], expMin: number | null, mySkills: Set<string>, userYears: number | null | undefined
+): { matched: string[]; score: number } | null {
+  const matched = jobSkills.filter((s) => mySkills.has(s.toLowerCase()));
+  if (matched.length === 0) return null;
+  // skill overlap weighted by how much of the job's requirements are covered
+  let score = (matched.length / Math.max(jobSkills.length, 3)) * 70 + Math.min(matched.length * 4, 20);
+  if (userYears !== null && userYears !== undefined) {
+    if (expMin === null || expMin <= userYears) score += 10;
+    else if (expMin > userYears + 2) score -= 25;
+  }
+  return { matched, score: Math.max(0, Math.min(100, Math.round(score))) };
+}
+
+const LIVE_MATCH_MIN_SCORE = 80;
+const LIVE_MATCH_MAX_AGE_DAYS = 15;
+
+/**
+ * Beyond the admin-curated `sources`, also live-fetch every watchlist company and surface
+ * anything that's a strong match (>=80%) and recent (<=15 days old). Nothing here touches
+ * the `jobs` table — computed fresh per request, discarded after the response is sent.
+ */
+async function liveWatchlistMatches(
+  db: D1Database, mySkills: Set<string>, userYears: number | null | undefined
+): Promise<any[]> {
+  const { results: watchlist } = await db.prepare(`SELECT company, ats, ats_ref FROM watchlist`).all<any>();
+  if (watchlist.length === 0) return [];
+
+  const cutoff = Date.now() - LIVE_MATCH_MAX_AGE_DAYS * 24 * 3600 * 1000;
+  const perCompany = await Promise.allSettled(
+    watchlist.map((w) => fetchJobsForSource(w.ats, w.ats_ref))
+  );
+
+  const out: any[] = [];
+  let syntheticId = -1;
+  for (let i = 0; i < perCompany.length; i++) {
+    const result = perCompany[i];
+    if (result.status !== "fulfilled") continue; // one company failing shouldn't fail the whole search
+    const company = watchlist[i].company;
+    for (const j of result.value.jobs) {
+      // cheap recency filter first, before the (slightly costlier) scoring pass
+      if (!j.postedAt || new Date(j.postedAt).getTime() < cutoff) continue;
+      const scored = scoreJob(j.skills, j.expMin, mySkills, userYears);
+      if (!scored || scored.score < LIVE_MATCH_MIN_SCORE) continue;
+      out.push({
+        id: syntheticId--,
+        title: j.title,
+        company,
+        location: j.location,
+        remote: j.remote,
+        job_type: j.jobType,
+        level: j.level,
+        exp_min: j.expMin,
+        exp_max: j.expMax,
+        role_category: j.roleCategory,
+        skills: j.skills,
+        description: j.description,
+        apply_url: j.applyUrl,
+        posted_at: j.postedAt,
+        matchedSkills: scored.matched,
+        score: scored.score,
+        live: true,
+      });
+    }
+  }
+  return out;
+}
+
 app.post("/api/match", async (c) => {
   const { text, years } = await c.req.json<{ text: string; years?: number }>();
   if (!text || text.trim().length < 30) {
@@ -499,37 +605,31 @@ app.post("/api/match", async (c) => {
     return c.json({ profile: { skills: [], years: userYears }, matches: [] });
   }
 
-  const { results } = await c.env.DB.prepare(
-    `SELECT id, title, company, location, remote, job_type, level, exp_min, exp_max,
-            role_category, skills, apply_url, posted_at
-     FROM jobs ORDER BY posted_at DESC LIMIT 2000`
-  ).all<any>();
-
   const mySkills = new Set(resumeSkills.map((s) => s.toLowerCase()));
-  const scored = results
+
+  const [{ results }, liveMatches] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT id, title, company, location, remote, job_type, level, exp_min, exp_max,
+              role_category, skills, apply_url, posted_at
+       FROM jobs ORDER BY posted_at DESC LIMIT 2000`
+    ).all<any>(),
+    liveWatchlistMatches(c.env.DB, mySkills, userYears),
+  ]);
+
+  const dbScored = results
     .map((j) => {
       const jobSkills: string[] = JSON.parse(j.skills);
-      const matched = jobSkills.filter((s) => mySkills.has(s.toLowerCase()));
-      if (matched.length === 0) return null;
-      // skill overlap weighted by how much of the job's requirements are covered
-      let score = (matched.length / Math.max(jobSkills.length, 3)) * 70 + Math.min(matched.length * 4, 20);
-      if (userYears !== null && userYears !== undefined) {
-        if (j.exp_min === null || j.exp_min <= userYears) score += 10;
-        else if (j.exp_min > userYears + 2) score -= 25;
-      }
-      return {
-        ...j,
-        skills: jobSkills,
-        remote: !!j.remote,
-        matchedSkills: matched,
-        score: Math.max(0, Math.min(100, Math.round(score))),
-      };
+      const scored = scoreJob(jobSkills, j.exp_min, mySkills, userYears);
+      if (!scored) return null;
+      return { ...j, skills: jobSkills, remote: !!j.remote, matchedSkills: scored.matched, score: scored.score };
     })
-    .filter(Boolean)
-    .sort((a: any, b: any) => b.score - a.score)
-    .slice(0, 60);
+    .filter(Boolean);
 
-  return c.json({ profile: { skills: resumeSkills, years: userYears }, matches: scored });
+  const combined = [...dbScored, ...liveMatches]
+    .sort((a: any, b: any) => b.score - a.score)
+    .slice(0, 80);
+
+  return c.json({ profile: { skills: resumeSkills, years: userYears }, matches: combined });
 });
 
 /* ---------------- worker entry ---------------- */

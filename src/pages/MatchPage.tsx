@@ -48,7 +48,11 @@ export default function MatchPage() {
     <div className="match-grid">
       <div className="match-hero">
         <h1>Resume Matching</h1>
-        <p>Upload your resume to receive a ranked list of open positions matched to your skills and experience.</p>
+        <p>
+          Upload your resume to receive a ranked list of open positions matched to your skills and
+          experience — searched across every company added here, plus a live check of the
+          admin-curated watchlist for strong (80%+) matches posted in the last 15 days.
+        </p>
       </div>
 
       <div
@@ -79,13 +83,20 @@ export default function MatchPage() {
           <input className="text-input" type="number" min={0} max={40} value={years}
             onChange={(e) => setYears(e.target.value)} />
           <button className="btn" disabled={busy || resumeText.trim().length < 30} onClick={() => runMatch()}>
-            {busy ? "Analyzing…" : "Match jobs"}
+            {busy ? "Searching…" : "Match jobs"}
           </button>
         </div>
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {busy && <div className="spinner" />}
+      {busy && (
+        <>
+          <div className="spinner" />
+          <p className="muted" style={{ textAlign: "center", marginTop: -6, fontSize: 13 }}>
+            Scoring stored listings and checking the live watchlist — this can take a few seconds.
+          </p>
+        </>
+      )}
 
       {profile && !busy && (
         <div className="panel profile-box">
@@ -102,7 +113,10 @@ export default function MatchPage() {
 
       {matches && !busy && (
         <div>
-          <p className="results-meta">{matches.length} matching position{matches.length === 1 ? "" : "s"}, best first</p>
+          <p className="results-meta">
+            {matches.length} matching position{matches.length === 1 ? "" : "s"}, best first
+            {matches.some((m) => m.live) && ` — including ${matches.filter((m) => m.live).length} live from the watchlist`}
+          </p>
           {matches.length === 0 ? (
             <div className="panel empty">
               <b>No matches yet.</b>

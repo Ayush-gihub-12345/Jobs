@@ -26,3 +26,8 @@ export const POSTED_WITHIN = [
 ];
 
 export const CURRENCIES = ["USD", "EUR", "GBP", "INR", "CAD", "AUD"];
+
+export const FILTER_KEYS = [
+  "skills", "types", "levels", "categories", "companies",
+  "location", "remote", "maxYears", "postedWithin",
+];
