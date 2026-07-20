@@ -1,9 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "jobs-platform",
+  "name": "hireers",
   "main": "worker/index.ts",
   "compatibility_date": "2025-06-01",
   "assets": {
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
   "vars": {
@@ -14,7 +15,7 @@
     {
       "binding": "DB",
       "database_name": "jobs-db",
-      "database_id": "cbf81990-d5e9-472a-b37b-51cf998e6a4c",
+      "database_id": "5ccdf67f-ec7f-4075-a5f2-b763ef8ddec0",
       "migrations_dir": "migrations"
     }
   ],

@@ -10,6 +10,7 @@ import { verifyFirebaseToken, type FirebaseUser } from "./firebaseAuth";
 
 interface Env {
   DB: D1Database;
+  ASSETS: Fetcher;
   ADMIN_USERNAME: string;
   ADMIN_PASSWORD: string;
   FIREBASE_PROJECT_ID: string;
@@ -644,6 +645,12 @@ app.post("/api/match", async (c) => {
 
   return c.json({ profile: { skills: resumeSkills, years: userYears }, matches: combined });
 });
+
+/* ---------------- SPA fallback ---------------- */
+// Client-side-only routes (/admin, /preferences, /match, /profile, ...) have no matching Hono
+// route — without this, Hono's own 404 wins before the static-assets SPA fallback ever gets a
+// chance, so a hard refresh/direct link to those routes would 404 instead of loading the app.
+app.notFound((c) => c.env.ASSETS.fetch(c.req.raw));
 
 /* ---------------- worker entry ---------------- */
 
