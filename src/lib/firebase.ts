@@ -2,7 +2,7 @@ import { initializeApp } from "firebase/app";
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, updateProfile, signOut as firebaseSignOut,
-  onAuthStateChanged, type User,
+  onAuthStateChanged, setPersistence, browserLocalPersistence, type User,
 } from "firebase/auth";
 
 const firebaseConfig = {
@@ -16,6 +16,9 @@ export const firebaseConfigured = !!firebaseConfig.apiKey && !!firebaseConfig.pr
 
 const app = firebaseConfigured ? initializeApp(firebaseConfig) : null;
 export const auth = app ? getAuth(app) : null;
+// Session persists across browser restarts (not just the current tab) — sign in once, stay
+// signed in until an explicit sign-out, same expectation as any SaaS product.
+if (auth) void setPersistence(auth, browserLocalPersistence);
 
 export function watchAuth(cb: (user: User | null) => void) {
   if (!auth) { cb(null); return () => {}; }

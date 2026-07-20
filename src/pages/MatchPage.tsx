@@ -49,9 +49,9 @@ export default function MatchPage() {
       <div className="match-hero">
         <h1>Resume Matching</h1>
         <p>
-          Upload your resume to receive a ranked list of open positions matched to your skills and
-          experience — searched across every company added here, plus a live check of the
-          admin-curated watchlist for strong (80%+) matches posted in the last 15 days.
+          Upload your resume to receive a ranked list of open India-based positions matched to your
+          skills and experience — searched across every company added here, plus a live check of
+          the admin-curated watchlist for strong (80%+) matches posted in the last 15 days.
         </p>
       </div>
 

@@ -5,7 +5,7 @@ import {
   type ManualJobInput, type NormalizedJob,
 } from "./ingest";
 import { hashJob } from "./hash";
-import { extractSkills, parseExperience, SKILLS } from "./extract";
+import { extractSkills, parseExperience, isIndiaLocation, SKILLS } from "./extract";
 import { verifyFirebaseToken, type FirebaseUser } from "./firebaseAuth";
 
 interface Env {
@@ -230,8 +230,12 @@ async function diffSyncJobs(db: D1Database, sourceId: number, company: string, j
 async function syncSource(db: D1Database, source: { id: number; ats: string; ats_ref: string }) {
   try {
     const { company, jobs } = await fetchJobsForSource(source.ats, source.ats_ref);
-    await diffSyncJobs(db, source.id, company, jobs);
-    return { ok: true, count: jobs.length };
+    // India-only platform: filter here, not just on read — keeps the DB (and FTS index) small,
+    // and non-India postings that disappear from the incoming set get cleaned up by the
+    // existing diff (nothing special needed for removal).
+    const indiaJobs = jobs.filter((j) => isIndiaLocation(j.location, j.title));
+    await diffSyncJobs(db, source.id, company, indiaJobs);
+    return { ok: true, count: indiaJobs.length };
   } catch (e: any) {
     await db.prepare(
       `UPDATE sources SET status='error', error=?, last_fetched_at=datetime('now') WHERE id=?`
@@ -293,8 +297,16 @@ app.post("/api/admin/sources/:id/refresh", async (c) => {
 app.post("/api/admin/sources/manual", async (c) => {
   const { company, jobs } = await c.req.json<{ company: string; jobs: ManualJobInput[] }>();
   if (!company?.trim()) return c.json({ error: "Company name is required" }, 400);
-  const validJobs = (jobs ?? []).filter((j) => j.title?.trim() && j.url?.trim());
-  if (validJobs.length === 0) return c.json({ error: "Add at least one job with a title and URL" }, 400);
+  const parsedJobs = (jobs ?? []).filter((j) => j.title?.trim() && j.url?.trim());
+  const validJobs = parsedJobs.filter((j) => isIndiaLocation(j.location ?? "", j.title));
+  const skippedNonIndia = parsedJobs.length - validJobs.length;
+  if (validJobs.length === 0) {
+    return c.json({
+      error: skippedNonIndia > 0
+        ? `All ${skippedNonIndia} pasted job(s) look non-India-based (hireers only lists India jobs) — include the city/state in the Location column so India-based roles are recognized.`
+        : "Add at least one job with a title and URL",
+    }, 400);
+  }
 
   const slug = slugify(company);
   const url = `manual://${slug}`;
@@ -314,7 +326,7 @@ app.post("/api/admin/sources/manual", async (c) => {
   const normalized = buildManualJobs(validJobs);
   await replaceSourceJobs(db, sourceId, company.trim(), normalized);
   const source = await db.prepare(`SELECT * FROM sources WHERE id = ?`).bind(sourceId).first();
-  return c.json({ source, count: normalized.length }, 201);
+  return c.json({ source, count: normalized.length, skippedNonIndia }, 201);
 });
 
 /* ---------------- admin: live-match watchlist ---------------- */
@@ -564,8 +576,9 @@ async function liveWatchlistMatches(
     if (result.status !== "fulfilled") continue; // one company failing shouldn't fail the whole search
     const company = watchlist[i].company;
     for (const j of result.value.jobs) {
-      // cheap recency filter first, before the (slightly costlier) scoring pass
+      // cheap filters first (recency, location), before the costlier scoring pass
       if (!j.postedAt || new Date(j.postedAt).getTime() < cutoff) continue;
+      if (!isIndiaLocation(j.location, j.title)) continue;
       const scored = scoreJob(j.skills, j.expMin, mySkills, userYears);
       if (!scored || scored.score < LIVE_MATCH_MIN_SCORE) continue;
       out.push({

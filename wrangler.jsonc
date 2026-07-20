@@ -8,7 +8,7 @@
   },
   "vars": {
     // Firebase project ID (not a secret) — must match VITE_FIREBASE_PROJECT_ID
-    "FIREBASE_PROJECT_ID": "REPLACE_WITH_YOUR_FIREBASE_PROJECT_ID"
+    "FIREBASE_PROJECT_ID": "jobs-9b284"
   },
   "d1_databases": [
     {

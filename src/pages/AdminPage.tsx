@@ -113,7 +113,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       const res = await api.admin.addSource(newUrl.trim());
       setNewUrl("");
       setNotice(res.sync.ok
-        ? { kind: "ok", text: `Added ${res.source.company} — imported ${res.sync.count} jobs.` }
+        ? { kind: "ok", text: `Added ${res.source.company} — imported ${res.sync.count} India-based job(s) (non-India postings from this source are skipped).` }
         : { kind: "error", text: `Source added but fetch failed: ${res.sync.error}` });
       await load();
     } catch (err: any) {
@@ -139,7 +139,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     setNotice(null);
     try {
       const res = await api.admin.importManual(manualCompany.trim(), manualJobs);
-      setNotice({ kind: "ok", text: `Imported ${res.count} job(s) for ${res.source.company}.` });
+      setNotice({
+        kind: "ok",
+        text: `Imported ${res.count} job(s) for ${res.source.company}.`
+          + (res.skippedNonIndia > 0 ? ` Skipped ${res.skippedNonIndia} that didn't look India-based.` : ""),
+      });
       setManualCompany("");
       setManualText("");
       await load();
@@ -155,6 +159,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
         <h1 style={{ margin: 0, fontSize: 24 }}>Admin panel</h1>
         <button className="btn secondary sm" onClick={onLogout}>Log out</button>
+      </div>
+
+      <div className="alert ok" style={{ marginBottom: 18 }}>
+        hireers is India-only: every import path below (career links, bulk-import, live watchlist)
+        automatically filters to India-based listings and silently skips everything else.
       </div>
 
       {stats && (
@@ -193,14 +202,15 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <div className="help-box" style={{ marginTop: 0, marginBottom: 14 }}>
           For companies without a fetchable feed — e.g. jobs listed only on their LinkedIn or Naukri
           page. Both block automated scraping, so paste each listing by hand: one job per line,
-          formatted <code>Title | Location | Apply URL</code> (location optional). Re-import the
-          same company name any time to replace its listings with an updated paste.
+          formatted <code>Title | Location | Apply URL</code>. Include a recognizable Indian
+          city or "India" in the location — entries that don't look India-based are skipped.
+          Re-import the same company name any time to replace its listings with an updated paste.
         </div>
         <form onSubmit={importManual}>
           <input className="text-input" placeholder="Company name" value={manualCompany}
             onChange={(e) => setManualCompany(e.target.value)} style={{ marginBottom: 10 }} />
           <textarea className="text-input" rows={5}
-            placeholder={"Senior Product Designer | San Francisco, CA | https://example.com/careers/123\nBackend Engineer | Remote | https://example.com/careers/124"}
+            placeholder={"Senior Product Designer | Bengaluru, India | https://example.com/careers/123\nBackend Engineer | Remote - India | https://example.com/careers/124"}
             value={manualText} onChange={(e) => setManualText(e.target.value)} />
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
             <span className="muted" style={{ fontSize: 13 }}>{manualJobs.length} job(s) parsed</span>
@@ -216,9 +226,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <div className="help-box" style={{ marginTop: 0, marginBottom: 14 }}>
           Companies here aren't imported into Browse Jobs — instead, every time someone runs a
           resume match, hireers fetches these career pages live and includes anything that's a
-          strong match (80%+) posted in the last 15 days. Nothing from this list is stored in
-          the database. Capped at 20 to keep each resume search fast and within a single
-          Worker request's subrequest limit.
+          strong match (80%+), India-based, and posted in the last 15 days. Nothing from this
+          list is stored in the database. Capped at 20 to keep each resume search fast and
+          within a single Worker request's subrequest limit.
         </div>
         <form className="form-row" onSubmit={addWatch}>
           <input className="text-input" placeholder="Career page link (same platforms as above)"

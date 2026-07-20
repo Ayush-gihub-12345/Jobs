@@ -108,7 +108,7 @@ export const api = {
     refreshAll: () => request<{ sources: Source[] }>(`/api/admin/refresh-all`, { method: "POST" }),
     deleteSource: (id: number) => request(`/api/admin/sources/${id}`, { method: "DELETE" }),
     importManual: (company: string, jobs: { title: string; url: string; location?: string }[]) =>
-      request<{ source: Source; count: number }>(
+      request<{ source: Source; count: number; skippedNonIndia: number }>(
         `/api/admin/sources/manual`, { method: "POST", body: JSON.stringify({ company, jobs }) }),
     stats: () =>
       request<{

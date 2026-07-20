@@ -261,6 +261,25 @@ export function inferCategory(title: string): string {
   return "other";
 }
 
+// Major Indian metro/tech-hub names — location strings from ATSes are free text with no
+// structured country field, so this is a heuristic keyword match, not a geocoder. Extend this
+// list if a legitimate India-based posting is getting filtered out incorrectly.
+const INDIA_LOCATION_PATTERN = new RegExp(
+  "\\b(" + [
+    "india", "bengaluru", "bangalore", "mumbai", "new delhi", "delhi", "ncr",
+    "hyderabad", "pune", "chennai", "kolkata", "calcutta", "gurgaon", "gurugram",
+    "noida", "ahmedabad", "jaipur", "kochi", "cochin", "chandigarh", "indore",
+    "coimbatore", "trivandrum", "thiruvananthapuram", "vadodara", "nagpur",
+    "surat", "visakhapatnam", "bhubaneswar", "mysuru", "mysore",
+  ].join("|") + ")\\b",
+  "i"
+);
+
+/** Best-effort check for whether a job listing is India-based, from free-text location/title. */
+export function isIndiaLocation(location: string, title = ""): boolean {
+  return INDIA_LOCATION_PATTERN.test(location) || INDIA_LOCATION_PATTERN.test(title);
+}
+
 export function htmlToText(html: string): string {
   return html
     // some ATSes (Greenhouse) return entity-escaped HTML — unescape tags first
