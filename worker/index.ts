@@ -5,7 +5,7 @@ import {
   type ManualJobInput, type NormalizedJob,
 } from "./ingest";
 import { hashJob } from "./hash";
-import { extractSkills, parseExperience, isIndiaLocation, SKILLS } from "./extract";
+import { extractSkills, parseExperience, isIndiaLocation, isJuniorLevel, SKILLS } from "./extract";
 import { verifyFirebaseToken, type FirebaseUser } from "./firebaseAuth";
 
 interface Env {
@@ -231,12 +231,12 @@ async function diffSyncJobs(db: D1Database, sourceId: number, company: string, j
 async function syncSource(db: D1Database, source: { id: number; ats: string; ats_ref: string }) {
   try {
     const { company, jobs } = await fetchJobsForSource(source.ats, source.ats_ref);
-    // India-only platform: filter here, not just on read — keeps the DB (and FTS index) small,
-    // and non-India postings that disappear from the incoming set get cleaned up by the
-    // existing diff (nothing special needed for removal).
-    const indiaJobs = jobs.filter((j) => isIndiaLocation(j.location, j.title));
-    await diffSyncJobs(db, source.id, company, indiaJobs);
-    return { ok: true, count: indiaJobs.length };
+    // hireers only keeps India-based, junior-friendly (internship/fresher/entry-level) postings.
+    // Filtered here, not just on read — keeps the DB (and FTS index) small, and postings that
+    // no longer qualify get cleaned up by the existing diff (nothing special needed for removal).
+    const kept = jobs.filter((j) => isIndiaLocation(j.location, j.title) && isJuniorLevel(j.level));
+    await diffSyncJobs(db, source.id, company, kept);
+    return { ok: true, count: kept.length };
   } catch (e: any) {
     await db.prepare(
       `UPDATE sources SET status='error', error=?, last_fetched_at=datetime('now') WHERE id=?`
@@ -299,12 +299,22 @@ app.post("/api/admin/sources/manual", async (c) => {
   const { company, jobs } = await c.req.json<{ company: string; jobs: ManualJobInput[] }>();
   if (!company?.trim()) return c.json({ error: "Company name is required" }, 400);
   const parsedJobs = (jobs ?? []).filter((j) => j.title?.trim() && j.url?.trim());
-  const validJobs = parsedJobs.filter((j) => isIndiaLocation(j.location ?? "", j.title));
-  const skippedNonIndia = parsedJobs.length - validJobs.length;
-  if (validJobs.length === 0) {
+  const indiaJobs = parsedJobs.filter((j) => isIndiaLocation(j.location ?? "", j.title));
+  const skippedNonIndia = parsedJobs.length - indiaJobs.length;
+
+  // Level is classified from title (+ description, if the paste ever carries one) via the same
+  // strict inferLevel() every automated source uses — only internship/fresher/entry-level survives.
+  const normalized = buildManualJobs(indiaJobs).filter((j) => isJuniorLevel(j.level));
+  const skippedNonJunior = indiaJobs.length - normalized.length;
+
+  if (normalized.length === 0) {
+    const reasons = [
+      skippedNonIndia > 0 && `${skippedNonIndia} didn't look India-based`,
+      skippedNonJunior > 0 && `${skippedNonJunior} didn't read as internship/fresher/entry-level`,
+    ].filter(Boolean);
     return c.json({
-      error: skippedNonIndia > 0
-        ? `All ${skippedNonIndia} pasted job(s) look non-India-based (hireers only lists India jobs) — include the city/state in the Location column so India-based roles are recognized.`
+      error: reasons.length > 0
+        ? `None of the pasted jobs qualified (${reasons.join(", ")}). hireers only lists India-based internship/fresher/entry-level roles.`
         : "Add at least one job with a title and URL",
     }, 400);
   }
@@ -324,10 +334,9 @@ app.post("/api/admin/sources/manual", async (c) => {
     sourceId = created!.id;
   }
 
-  const normalized = buildManualJobs(validJobs);
   await replaceSourceJobs(db, sourceId, company.trim(), normalized);
   const source = await db.prepare(`SELECT * FROM sources WHERE id = ?`).bind(sourceId).first();
-  return c.json({ source, count: normalized.length, skippedNonIndia }, 201);
+  return c.json({ source, count: normalized.length, skippedNonIndia, skippedNonJunior }, 201);
 });
 
 /* ---------------- admin: live-match watchlist ---------------- */
@@ -577,9 +586,10 @@ async function liveWatchlistMatches(
     if (result.status !== "fulfilled") continue; // one company failing shouldn't fail the whole search
     const company = watchlist[i].company;
     for (const j of result.value.jobs) {
-      // cheap filters first (recency, location), before the costlier scoring pass
+      // cheap filters first (recency, location, level), before the costlier scoring pass
       if (!j.postedAt || new Date(j.postedAt).getTime() < cutoff) continue;
       if (!isIndiaLocation(j.location, j.title)) continue;
+      if (!isJuniorLevel(j.level)) continue;
       const scored = scoreJob(j.skills, j.expMin, mySkills, userYears);
       if (!scored || scored.score < LIVE_MATCH_MIN_SCORE) continue;
       out.push({

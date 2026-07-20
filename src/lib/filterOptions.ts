@@ -5,12 +5,11 @@ export const JOB_TYPES = [
   { v: "part-time", label: "Part-time" },
 ];
 
+// hireers only ever stores internship/fresher/entry-level postings (see worker/extract.ts
+// isJuniorLevel) — mid/senior/lead are omitted here since they'd always show zero results.
 export const LEVELS = [
   { v: "intern", label: "Intern" },
   { v: "entry", label: "Entry level (0–1 yrs)" },
-  { v: "mid", label: "Mid level (2–4 yrs)" },
-  { v: "senior", label: "Senior (5+ yrs)" },
-  { v: "lead", label: "Lead / Staff+" },
 ];
 
 export const CATEGORIES = [

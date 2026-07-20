@@ -54,7 +54,7 @@ function finishJob(partial: {
     location,
     remote,
     jobType: inferJobType(title, partial.atsType),
-    level: inferLevel(title, expMin),
+    level: inferLevel(title, desc, expMin),
     expMin,
     expMax,
     roleCategory: inferCategory(title),

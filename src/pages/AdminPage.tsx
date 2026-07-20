@@ -113,7 +113,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       const res = await api.admin.addSource(newUrl.trim());
       setNewUrl("");
       setNotice(res.sync.ok
-        ? { kind: "ok", text: `Added ${res.source.company} — imported ${res.sync.count} India-based job(s) (non-India postings from this source are skipped).` }
+        ? { kind: "ok", text: `Added ${res.source.company} — imported ${res.sync.count} India-based internship/fresher/entry-level job(s) (everything else from this source is skipped).` }
         : { kind: "error", text: `Source added but fetch failed: ${res.sync.error}` });
       await load();
     } catch (err: any) {
@@ -139,10 +139,14 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     setNotice(null);
     try {
       const res = await api.admin.importManual(manualCompany.trim(), manualJobs);
+      const skipNotes = [
+        res.skippedNonIndia > 0 && `${res.skippedNonIndia} non-India`,
+        res.skippedNonJunior > 0 && `${res.skippedNonJunior} not internship/fresher/entry-level`,
+      ].filter(Boolean).join(", ");
       setNotice({
         kind: "ok",
         text: `Imported ${res.count} job(s) for ${res.source.company}.`
-          + (res.skippedNonIndia > 0 ? ` Skipped ${res.skippedNonIndia} that didn't look India-based.` : ""),
+          + (skipNotes ? ` Skipped: ${skipNotes}.` : ""),
       });
       setManualCompany("");
       setManualText("");
@@ -162,8 +166,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       </div>
 
       <div className="alert ok" style={{ marginBottom: 18 }}>
-        hireers is India-only: every import path below (career links, bulk-import, live watchlist)
-        automatically filters to India-based listings and silently skips everything else.
+        hireers only keeps <b>India-based</b>, <b>internship / fresher / entry-level</b> postings.
+        Every import path below (career links, bulk-import, live watchlist) checks both the
+        location and the full job description — not just the title — and silently skips
+        anything that doesn't qualify (mid/senior/lead roles, non-India locations).
       </div>
 
       {stats && (
@@ -203,7 +209,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           For companies without a fetchable feed — e.g. jobs listed only on their LinkedIn or Naukri
           page. Both block automated scraping, so paste each listing by hand: one job per line,
           formatted <code>Title | Location | Apply URL</code>. Include a recognizable Indian
-          city or "India" in the location — entries that don't look India-based are skipped.
+          city or "India" in the location, and make sure the title reflects the level (e.g.
+          "Software Engineer Intern", "Graduate Trainee", "Junior Analyst") — entries that don't
+          look India-based or don't read as internship/fresher/entry-level are skipped.
           Re-import the same company name any time to replace its listings with an updated paste.
         </div>
         <form onSubmit={importManual}>
@@ -226,9 +234,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <div className="help-box" style={{ marginTop: 0, marginBottom: 14 }}>
           Companies here aren't imported into Browse Jobs — instead, every time someone runs a
           resume match, hireers fetches these career pages live and includes anything that's a
-          strong match (80%+), India-based, and posted in the last 15 days. Nothing from this
-          list is stored in the database. Capped at 20 to keep each resume search fast and
-          within a single Worker request's subrequest limit.
+          strong match (80%+), India-based, internship/fresher/entry-level, and posted in the
+          last 15 days. Nothing from this list is stored in the database. Capped at 20 to keep
+          each resume search fast and within a single Worker request's subrequest limit.
         </div>
         <form className="form-row" onSubmit={addWatch}>
           <input className="text-input" placeholder="Career page link (same platforms as above)"

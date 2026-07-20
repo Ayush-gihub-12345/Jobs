@@ -218,12 +218,25 @@ export function parseExperience(text: string): { expMin: number | null; expMax: 
 
 export type Level = "intern" | "entry" | "mid" | "senior" | "lead";
 
-export function inferLevel(title: string, expMin: number | null): Level {
-  const t = title.toLowerCase();
-  if (/\bintern(ship)?\b|\btrainee\b/.test(t)) return "intern";
-  if (/\b(junior|jr\.?|entry|graduate|fresher|associate)\b|\bnew grad\b/.test(t)) return "entry";
-  if (/\b(staff|principal|lead|head|director|vp|vice president|architect|manager)\b/.test(t)) return "lead";
-  if (/\b(senior|sr\.?)\b/.test(t)) return "senior";
+/**
+ * Classifies seniority. Internship/fresher/entry-level signals are checked across the FULL
+ * description, not just the title — many postings only say "great for freshers" or "0-2 years"
+ * in the body, with a generic title like "Software Engineer". Missing that in the title-only
+ * check was letting genuine entry-level roles slip through as "mid", which matters a lot for a
+ * platform that only wants to keep junior-friendly postings.
+ * Seniority (senior/lead) keywords are checked on the title only — a stray "reports to the
+ * Senior Manager" line in the body shouldn't disqualify an otherwise entry-level posting.
+ */
+export function inferLevel(title: string, description: string, expMin: number | null): Level {
+  const titleText = title.toLowerCase();
+  const fullText = `${titleText}\n${description.toLowerCase()}`;
+
+  if (/\bintern(ship)?\b|\btrainee\b/.test(fullText)) return "intern";
+  if (/\b(junior|jr\.?|entry[\s-]?level|graduate program|new grad(uate)?s?|fresher[s]?|associate)\b/.test(fullText)) {
+    return "entry";
+  }
+  if (/\b(staff|principal|lead|head|director|vp|vice president|architect|manager)\b/.test(titleText)) return "lead";
+  if (/\b(senior|sr\.?)\b/.test(titleText)) return "senior";
   if (expMin !== null) {
     if (expMin >= 5) return "senior";
     if (expMin <= 1) return "entry";
@@ -278,6 +291,11 @@ const INDIA_LOCATION_PATTERN = new RegExp(
 /** Best-effort check for whether a job listing is India-based, from free-text location/title. */
 export function isIndiaLocation(location: string, title = ""): boolean {
   return INDIA_LOCATION_PATTERN.test(location) || INDIA_LOCATION_PATTERN.test(title);
+}
+
+/** hireers only keeps internship / fresher / entry-level roles (see inferLevel for the check). */
+export function isJuniorLevel(level: string): boolean {
+  return level === "intern" || level === "entry";
 }
 
 export function htmlToText(html: string): string {
