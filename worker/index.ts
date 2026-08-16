@@ -5,7 +5,7 @@ import {
   type ManualJobInput, type NormalizedJob,
 } from "./ingest";
 import { hashJob } from "./hash";
-import { extractSkills, parseExperience, isIndiaLocation, isJuniorLevel, isTechnicalRole, SKILLS } from "./extract";
+import { extractSkills, parseExperience, isIndiaLocation, isJuniorLevel, SKILLS } from "./extract";
 import { verifyFirebaseToken, type FirebaseUser } from "./firebaseAuth";
 
 interface Env {
@@ -231,12 +231,11 @@ async function diffSyncJobs(db: D1Database, sourceId: number, company: string, j
 async function syncSource(db: D1Database, source: { id: number; ats: string; ats_ref: string }) {
   try {
     const { company, jobs } = await fetchJobsForSource(source.ats, source.ats_ref);
-    // hireers only keeps India-based, junior-friendly (internship/fresher/entry-level), technical
-    // (engineering/data) postings. Filtered here, not just on read — keeps the DB (and FTS index)
-    // small, and postings that no longer qualify get cleaned up by the existing diff.
-    const kept = jobs.filter((j) =>
-      isIndiaLocation(j.location, j.title) && isJuniorLevel(j.level) && isTechnicalRole(j.roleCategory)
-    );
+    // hireers only keeps India-based, junior-friendly (internship/fresher/entry-level) postings —
+    // every field/category is kept (resume matching handles relevance, not a platform-level filter).
+    // Filtered here, not just on read — keeps the DB (and FTS index) small, and postings that
+    // no longer qualify get cleaned up by the existing diff.
+    const kept = jobs.filter((j) => isIndiaLocation(j.location, j.title) && isJuniorLevel(j.level));
     await diffSyncJobs(db, source.id, company, kept);
     return { ok: true, count: kept.length };
   } catch (e: any) {
@@ -330,7 +329,7 @@ app.post("/api/admin/sources", async (c) => {
 
 // Bulk-upload a CSV (or plain URL-per-line list) of career links — each processed through the
 // exact same pipeline as the single "Add a career link" form above (ATS detection, LinkedIn/
-// Naukri rejection, India/technical/junior filtering on sync). Capped and run sequentially so
+// Naukri rejection, India/junior-level filtering on sync). Capped and run sequentially so
 // one request never fires off dozens of parallel external fetches at once.
 const BULK_SOURCES_MAX = 25;
 
@@ -372,22 +371,19 @@ app.post("/api/admin/sources/manual", async (c) => {
   const indiaJobs = parsedJobs.filter((j) => isIndiaLocation(j.location ?? "", j.title));
   const skippedNonIndia = parsedJobs.length - indiaJobs.length;
 
-  // Level/category are classified from title (+ description, if the paste ever carries one) via
-  // the same strict checks every automated source uses.
-  const afterLevel = buildManualJobs(indiaJobs).filter((j) => isJuniorLevel(j.level));
-  const skippedNonJunior = indiaJobs.length - afterLevel.length;
-  const normalized = afterLevel.filter((j) => isTechnicalRole(j.roleCategory));
-  const skippedNonTechnical = afterLevel.length - normalized.length;
+  // Level is classified from title (+ description, if the paste ever carries one) via the same
+  // strict check every automated source uses.
+  const normalized = buildManualJobs(indiaJobs).filter((j) => isJuniorLevel(j.level));
+  const skippedNonJunior = indiaJobs.length - normalized.length;
 
   if (normalized.length === 0) {
     const reasons = [
       skippedNonIndia > 0 && `${skippedNonIndia} didn't look India-based`,
       skippedNonJunior > 0 && `${skippedNonJunior} didn't read as internship/fresher/entry-level`,
-      skippedNonTechnical > 0 && `${skippedNonTechnical} didn't read as a technical (engineering/data) role`,
     ].filter(Boolean);
     return c.json({
       error: reasons.length > 0
-        ? `None of the pasted jobs qualified (${reasons.join(", ")}). hireers only lists India-based, technical, internship/fresher/entry-level roles.`
+        ? `None of the pasted jobs qualified (${reasons.join(", ")}). hireers only lists India-based internship/fresher/entry-level roles.`
         : "Add at least one job with a title and URL",
     }, 400);
   }
@@ -409,7 +405,7 @@ app.post("/api/admin/sources/manual", async (c) => {
 
   await replaceSourceJobs(db, sourceId, company.trim(), normalized);
   const source = await db.prepare(`SELECT * FROM sources WHERE id = ?`).bind(sourceId).first();
-  return c.json({ source, count: normalized.length, skippedNonIndia, skippedNonJunior, skippedNonTechnical }, 201);
+  return c.json({ source, count: normalized.length, skippedNonIndia, skippedNonJunior }, 201);
 });
 
 /* ---------------- admin: live-match watchlist ---------------- */
@@ -659,11 +655,10 @@ async function liveWatchlistMatches(
     if (result.status !== "fulfilled") continue; // one company failing shouldn't fail the whole search
     const company = watchlist[i].company;
     for (const j of result.value.jobs) {
-      // cheap filters first (recency, location, level, category), before the costlier scoring pass
+      // cheap filters first (recency, location, level), before the costlier scoring pass
       if (!j.postedAt || new Date(j.postedAt).getTime() < cutoff) continue;
       if (!isIndiaLocation(j.location, j.title)) continue;
       if (!isJuniorLevel(j.level)) continue;
-      if (!isTechnicalRole(j.roleCategory)) continue;
       const scored = scoreJob(j.skills, j.expMin, mySkills, userYears);
       if (!scored || scored.score < LIVE_MATCH_MIN_SCORE) continue;
       out.push({
