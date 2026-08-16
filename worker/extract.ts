@@ -298,6 +298,11 @@ export function isJuniorLevel(level: string): boolean {
   return level === "intern" || level === "entry";
 }
 
+/** hireers only keeps technical roles — no Sales, BPO/Support, HR, Marketing, Finance, etc. */
+export function isTechnicalRole(category: string): boolean {
+  return category === "engineering" || category === "data";
+}
+
 export function htmlToText(html: string): string {
   return html
     // some ATSes (Greenhouse) return entity-escaped HTML — unescape tags first

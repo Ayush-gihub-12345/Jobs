@@ -113,7 +113,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       const res = await api.admin.addSource(newUrl.trim());
       setNewUrl("");
       setNotice(res.sync.ok
-        ? { kind: "ok", text: `Added ${res.source.company} — imported ${res.sync.count} India-based internship/fresher/entry-level job(s) (everything else from this source is skipped).` }
+        ? { kind: "ok", text: `Added ${res.source.company} — imported ${res.sync.count} India-based, technical, internship/fresher/entry-level job(s) (everything else from this source is skipped).` }
         : { kind: "error", text: `Source added but fetch failed: ${res.sync.error}` });
       await load();
     } catch (err: any) {
@@ -142,6 +142,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       const skipNotes = [
         res.skippedNonIndia > 0 && `${res.skippedNonIndia} non-India`,
         res.skippedNonJunior > 0 && `${res.skippedNonJunior} not internship/fresher/entry-level`,
+        res.skippedNonTechnical > 0 && `${res.skippedNonTechnical} non-technical`,
       ].filter(Boolean).join(", ");
       setNotice({
         kind: "ok",
@@ -166,10 +167,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       </div>
 
       <div className="alert ok" style={{ marginBottom: 18 }}>
-        hireers only keeps <b>India-based</b>, <b>internship / fresher / entry-level</b> postings.
-        Every import path below (career links, bulk-import, live watchlist) checks both the
-        location and the full job description — not just the title — and silently skips
-        anything that doesn't qualify (mid/senior/lead roles, non-India locations).
+        hireers only keeps <b>India-based</b>, <b>technical</b> (engineering/data),{" "}
+        <b>internship / fresher / entry-level</b> postings. Every import path below (career
+        links, bulk-import, live watchlist) checks location, role category, and the full job
+        description — not just the title — and silently skips anything that doesn't qualify
+        (Sales/HR/BPO/etc., mid/senior/lead roles, non-India locations).
       </div>
 
       {stats && (
@@ -209,9 +211,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           For companies without a fetchable feed — e.g. jobs listed only on their LinkedIn or Naukri
           page. Both block automated scraping, so paste each listing by hand: one job per line,
           formatted <code>Title | Location | Apply URL</code>. Include a recognizable Indian
-          city or "India" in the location, and make sure the title reflects the level (e.g.
-          "Software Engineer Intern", "Graduate Trainee", "Junior Analyst") — entries that don't
-          look India-based or don't read as internship/fresher/entry-level are skipped.
+          city or "India" in the location, and make sure the title reflects both the level and
+          the field (e.g. "Software Engineer Intern", "Graduate Trainee — Data", "Junior Analyst")
+          — non-India, non-technical, or non-junior entries are skipped.
           Re-import the same company name any time to replace its listings with an updated paste.
         </div>
         <form onSubmit={importManual}>
@@ -234,8 +236,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <div className="help-box" style={{ marginTop: 0, marginBottom: 14 }}>
           Companies here aren't imported into Browse Jobs — instead, every time someone runs a
           resume match, hireers fetches these career pages live and includes anything that's a
-          strong match (80%+), India-based, internship/fresher/entry-level, and posted in the
-          last 15 days. Nothing from this list is stored in the database. Capped at 20 to keep
+          strong match (80%+), India-based, technical, internship/fresher/entry-level, and
+          posted in the last 15 days. Nothing from this list is stored in the database. Capped at 20 to keep
           each resume search fast and within a single Worker request's subrequest limit.
         </div>
         <form className="form-row" onSubmit={addWatch}>

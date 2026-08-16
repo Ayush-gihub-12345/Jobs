@@ -20,8 +20,10 @@
     }
   ],
   "triggers": {
-    // Refresh all job sources hourly
-    "crons": ["0 * * * *"]
+    // Smart scaling refresh — see targetIntervalHours()/smartSyncTick() in worker/index.ts.
+    // Ticking every 30 min lets the scheduler stagger refreshes finely as more sources are added,
+    // instead of refreshing every source on every tick.
+    "crons": ["*/30 * * * *"]
   },
   "observability": {
     "enabled": true
