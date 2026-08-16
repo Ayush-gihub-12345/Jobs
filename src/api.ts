@@ -102,6 +102,11 @@ export const api = {
     addSource: (url: string) =>
       request<{ source: Source; sync: { ok: boolean; count?: number; error?: string } }>(
         `/api/admin/sources`, { method: "POST", body: JSON.stringify({ url }) }),
+    addSourcesBulk: (urls: string[]) =>
+      request<{
+        results: { url: string; ok: boolean; company?: string; count?: number; error?: string }[];
+        skippedOverCap: number;
+      }>(`/api/admin/sources/bulk`, { method: "POST", body: JSON.stringify({ urls }) }),
     refreshSource: (id: number) =>
       request<{ source: Source; sync: { ok: boolean; error?: string } }>(
         `/api/admin/sources/${id}/refresh`, { method: "POST" }),

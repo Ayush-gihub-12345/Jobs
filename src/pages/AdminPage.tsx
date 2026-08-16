@@ -58,6 +58,17 @@ function parseManualJobs(text: string): { title: string; url: string; location?:
     .filter((j) => j.title && j.url);
 }
 
+// Accepts either a plain URL-per-line list or a simple CSV (URL as the first column, optional
+// header row) — takes the first field of each line, strips quotes, keeps only real http(s) URLs.
+function parseCsvUrls(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.split(",")[0]?.trim().replace(/^"|"$/g, "") ?? "")
+    .filter((u) => u && /^https?:\/\//i.test(u));
+}
+
+type BulkResult = { url: string; ok: boolean; company?: string; count?: number; error?: string };
+
 function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [sources, setSources] = useState<Source[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -73,6 +84,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [watchUrl, setWatchUrl] = useState("");
   const [watching, setWatching] = useState(false);
   const [watchBusyIds, setWatchBusyIds] = useState<Set<number>>(new Set());
+  const [csvUrls, setCsvUrls] = useState<string[]>([]);
+  const [csvFileName, setCsvFileName] = useState("");
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkResults, setBulkResults] = useState<BulkResult[] | null>(null);
 
   const load = async () => {
     const [s, st, w] = await Promise.all([api.admin.sources(), api.admin.stats(), api.admin.watchlist()]);
@@ -103,6 +118,35 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     try { await api.admin.deleteWatchlist(id); await load(); }
     catch (err: any) { setNotice({ kind: "error", text: err.message }); }
     finally { setWatchBusyIds((s) => { const n = new Set(s); n.delete(id); return n; }); }
+  };
+
+  const handleCsvFile = async (file: File) => {
+    setBulkResults(null);
+    setCsvFileName(file.name);
+    setCsvUrls(parseCsvUrls(await file.text()));
+  };
+
+  const importCsv = async () => {
+    setBulkImporting(true);
+    setBulkResults(null);
+    setNotice(null);
+    try {
+      const res = await api.admin.addSourcesBulk(csvUrls);
+      setBulkResults(res.results);
+      const okCount = res.results.filter((r) => r.ok).length;
+      setNotice({
+        kind: okCount > 0 ? "ok" : "error",
+        text: `Imported ${okCount} of ${res.results.length} link(s).`
+          + (res.skippedOverCap > 0 ? ` ${res.skippedOverCap} ignored — cap is ${csvUrls.length > 25 ? 25 : csvUrls.length} per upload, re-upload the rest separately.` : ""),
+      });
+      setCsvUrls([]);
+      setCsvFileName("");
+      await load();
+    } catch (err: any) {
+      setNotice({ kind: "error", text: err.message });
+    } finally {
+      setBulkImporting(false);
+    }
   };
 
   const addSource = async (e: React.FormEvent) => {
@@ -200,9 +244,56 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           Paste any company career page link. Supported automatically: <b>Greenhouse</b> (boards.greenhouse.io/…),{" "}
           <b>Lever</b> (jobs.lever.co/…), <b>Ashby</b> (jobs.ashbyhq.com/…), <b>Workable</b> (apply.workable.com/…),{" "}
           <b>SmartRecruiters</b>, <b>Recruitee</b>, <b>Zoho Recruit</b>, <b>Freshteam</b>, <b>Keka</b>,{" "}
-          <b>Darwinbox</b>, plus any page with JSON-LD job markup. All sources auto-refresh every hour.{" "}
+          <b>Darwinbox</b>, plus any page with JSON-LD job markup. Sources auto-refresh on a
+          smart, scaling schedule — more often with few sources, spread out as more get added.{" "}
           <b>LinkedIn and Naukri links are rejected</b> — both block automated access; use bulk-import below instead.
         </div>
+      </div>
+
+      <div className="admin-section">
+        <h2>Bulk-upload company links (CSV)</h2>
+        <div className="help-box" style={{ marginTop: 0, marginBottom: 14 }}>
+          Upload a CSV or plain text file with one career link per line — a mix of Greenhouse,
+          Lever, Ashby, or any other supported platform (see the list above). Each link goes
+          through the exact same import as "Add a career link": ATS auto-detection, then India /
+          technical / junior-level filtering on sync. LinkedIn and Naukri links in the file are
+          rejected the same way, with a reason shown per row. Capped at 25 links per upload —
+          split larger lists across multiple uploads.
+        </div>
+        <input type="file" accept=".csv,.txt" className="text-input"
+          onChange={(e) => e.target.files?.[0] && handleCsvFile(e.target.files[0])} />
+        {csvUrls.length > 0 && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+            <span className="muted" style={{ fontSize: 13 }}>
+              {csvFileName} — {csvUrls.length} link{csvUrls.length === 1 ? "" : "s"} parsed
+              {csvUrls.length > 25 ? ` (first 25 will be imported)` : ""}
+            </span>
+            <button className="btn" disabled={bulkImporting} onClick={importCsv}>
+              {bulkImporting ? "Importing…" : "Import all"}
+            </button>
+          </div>
+        )}
+        {bulkResults && (
+          <div className="panel" style={{ marginTop: 14, overflowX: "auto" }}>
+            <table className="sources">
+              <thead><tr><th>Link</th><th>Result</th></tr></thead>
+              <tbody>
+                {bulkResults.map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {r.company ?? r.url}
+                    </td>
+                    <td>
+                      {r.ok
+                        ? <span className="status-pill ok">imported {r.count}</span>
+                        : <span className="status-pill error" title={r.error}>{r.error}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="admin-section">

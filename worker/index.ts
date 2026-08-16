@@ -298,24 +298,56 @@ app.get("/api/admin/sources", async (c) => {
   return c.json({ sources: results });
 });
 
+/** Shared by the single "Add a career link" form and the CSV bulk-upload endpoint. */
+async function addOneSource(db: D1Database, rawUrl: string): Promise<
+  | { ok: true; source: any; sync: { ok: boolean; count?: number; error?: string } }
+  | { ok: false; error: string }
+> {
+  const url = rawUrl.trim();
+  const blocked = blockedHostReason(url);
+  if (blocked) return { ok: false, error: blocked };
+  const detected = detectAts(url);
+  if (!detected) return { ok: false, error: "Invalid URL" };
+
+  const existing = await db.prepare(`SELECT id FROM sources WHERE url = ?`).bind(url).first();
+  if (existing) return { ok: false, error: "This career link is already added" };
+
+  const res = await db.prepare(
+    `INSERT INTO sources (url, company, ats, ats_ref) VALUES (?, ?, ?, ?) RETURNING id`
+  ).bind(url, detected.company, detected.ats, detected.atsRef).first<{ id: number }>();
+
+  const sync = await syncSource(db, { id: res!.id, ats: detected.ats, ats_ref: detected.atsRef });
+  const source = await db.prepare(`SELECT * FROM sources WHERE id = ?`).bind(res!.id).first();
+  return { ok: true, source, sync };
+}
+
 app.post("/api/admin/sources", async (c) => {
   const { url } = await c.req.json<{ url: string }>();
-  const blocked = blockedHostReason((url ?? "").trim());
-  if (blocked) return c.json({ error: blocked }, 400);
-  const detected = detectAts((url ?? "").trim());
-  if (!detected) return c.json({ error: "Invalid URL" }, 400);
+  const result = await addOneSource(c.env.DB, url ?? "");
+  if (!result.ok) return c.json({ error: result.error }, result.error.includes("already added") ? 409 : 400);
+  return c.json({ source: result.source, sync: result.sync }, result.sync.ok ? 201 : 207);
+});
 
-  const existing = await c.env.DB.prepare(`SELECT id FROM sources WHERE url = ?`)
-    .bind(url.trim()).first();
-  if (existing) return c.json({ error: "This career link is already added" }, 409);
+// Bulk-upload a CSV (or plain URL-per-line list) of career links — each processed through the
+// exact same pipeline as the single "Add a career link" form above (ATS detection, LinkedIn/
+// Naukri rejection, India/technical/junior filtering on sync). Capped and run sequentially so
+// one request never fires off dozens of parallel external fetches at once.
+const BULK_SOURCES_MAX = 25;
 
-  const res = await c.env.DB.prepare(
-    `INSERT INTO sources (url, company, ats, ats_ref) VALUES (?, ?, ?, ?) RETURNING id`
-  ).bind(url.trim(), detected.company, detected.ats, detected.atsRef).first<{ id: number }>();
+app.post("/api/admin/sources/bulk", async (c) => {
+  const { urls } = await c.req.json<{ urls: string[] }>();
+  const cleaned = [...new Set((urls ?? []).map((u) => u.trim()).filter(Boolean))];
+  if (cleaned.length === 0) return c.json({ error: "No URLs provided" }, 400);
+  const capped = cleaned.slice(0, BULK_SOURCES_MAX);
 
-  const sync = await syncSource(c.env.DB, { id: res!.id, ats: detected.ats, ats_ref: detected.atsRef });
-  const source = await c.env.DB.prepare(`SELECT * FROM sources WHERE id = ?`).bind(res!.id).first();
-  return c.json({ source, sync }, sync.ok ? 201 : 207);
+  const results: { url: string; ok: boolean; company?: string; count?: number; error?: string }[] = [];
+  for (const url of capped) {
+    const r = await addOneSource(c.env.DB, url);
+    results.push(r.ok
+      ? { url, ok: r.sync.ok, company: r.source.company, count: r.sync.count, error: r.sync.ok ? undefined : r.sync.error }
+      : { url, ok: false, error: r.error });
+  }
+  return c.json({ results, skippedOverCap: cleaned.length - capped.length });
 });
 
 app.post("/api/admin/sources/:id/refresh", async (c) => {
